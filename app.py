@@ -4,8 +4,8 @@ from flask import Flask, render_template, request, flash, redirect, session, g
 from flask_debugtoolbar import DebugToolbarExtension
 from sqlalchemy.exc import IntegrityError
 
-from forms import UserAddForm, LoginForm, MessageForm
-from models import db, connect_db, User, Message
+from forms import EditUser, UserAddForm, LoginForm, MessageForm
+from models import db, connect_db, User, Message, Likes
 
 CURR_USER_KEY = "curr_user"
 
@@ -154,7 +154,6 @@ def users_show(user_id):
                 .all())
     return render_template('users/show.html', user=user, messages=messages)
 
-
 @app.route('/users/<int:user_id>/following')
 def show_following(user_id):
     """Show list of people this user is following."""
@@ -209,11 +208,31 @@ def stop_following(follow_id):
     return redirect(f"/users/{g.user.id}/following")
 
 
-@app.route('/users/profile', methods=["GET", "POST"])
-def profile():
+@app.route('/users/<int:user_id>/profile', methods=["GET", "POST"])
+def profile(user_id):
     """Update profile for current user."""
 
-    # IMPLEMENT THIS
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+    user = User.query.get_or_404(user_id)
+    form = EditUser()
+
+    if form.validate_on_submit():
+        if User.authenticate(user.username, form.password.data):
+            user.username = form.username.data
+            user.email = form.email.data
+            user.bio = form.bio.data
+            user.image_url = form.image_url.data or "/static/images/default-pic.png"
+            user.header_image_url = form.header_image_url.data or None
+
+            db.session.commit()
+            return redirect(f'/users/{ user.id }')
+
+        flash('Incorrect password, try again!', 'danger')
+
+    return render_template('users/edit.html', user=user, form=form)
 
 
 @app.route('/users/delete', methods=["POST"])
@@ -274,11 +293,45 @@ def messages_destroy(message_id):
         flash("Access unauthorized.", "danger")
         return redirect("/")
 
-    msg = Message.query.get(message_id)
+    msg = Message.query.get_or_404(message_id)
     db.session.delete(msg)
     db.session.commit()
 
     return redirect(f"/users/{g.user.id}")
+
+
+@app.route('/users/add_like/<int:msg_id>', methods=['POST'])
+def like_message(msg_id):
+    '''User liking message. Save to database'''
+
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+
+    liked = Likes(user_id= g.user.id, message_id = msg_id)
+
+    db.session.add(liked)
+    db.session.commit()
+
+    # needs to return to page to refresh the page
+    return redirect('/')
+
+@app.route('/users/remove_like/<int:msg_id>', methods=['POST'])
+def unlike_message(msg_id):
+    '''User unliking message. Remove like from database'''
+
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+
+    unliked = Likes.query.filter(Likes.message_id == msg_id, Likes.user_id == g.user.id).first()
+
+    db.session.delete(unliked)
+    db.session.commit()
+
+    return redirect('/')
+
 
 
 ##############################################################################
@@ -294,16 +347,29 @@ def homepage():
     """
 
     if g.user:
+        following_ids = [item.id for item in g.user.following]
+        following_ids.append(g.user.id)
+
         messages = (Message
                     .query
+                    .filter(Message.user_id.in_(following_ids))
                     .order_by(Message.timestamp.desc())
                     .limit(100)
                     .all())
 
-        return render_template('home.html', messages=messages)
+        liked_messages = (Likes.query.filter(Likes.user_id == g.user.id).all())
+        likes = [like.message_id for like in liked_messages]
+
+        return render_template('home.html', messages=messages, likes = likes)
 
     else:
         return render_template('home-anon.html')
+
+@app.errorhandler(404)
+def page_not_found(e):
+    '''Dsiplay custom 404 page.'''
+
+    return render_template('404.html'), 404
 
 
 ##############################################################################
